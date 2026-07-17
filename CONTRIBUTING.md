@@ -84,7 +84,10 @@ uv run ruff check .
 uv run python manage.py check
 uv run python manage.py makemigrations --check --dry-run
 uv run pytest
+uv run python manage.py spectacular --validate --file .tmp-task-003-schema.yml
 ```
+
+Inspect the schema result and remove the generated `.tmp-task-003-schema.yml` after validation.
 
 When a change includes new migrations, also run:
 
@@ -112,7 +115,13 @@ For Django model and Admin changes, verify the behavior through:
 http://127.0.0.1:8000/admin/
 ```
 
-For future API changes, include example requests and the API documentation URL.
+For API changes, include example requests and the API documentation URL. Swagger UI is available at:
+
+```text
+http://127.0.0.1:8000/api/docs/
+```
+
+Use local-only users and tokens. Do not paste access tokens, refresh tokens, or signing keys into pull requests, issues, screenshots, or documentation.
 
 ## Commit messages
 

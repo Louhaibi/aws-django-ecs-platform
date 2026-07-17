@@ -2,7 +2,7 @@
 
 ## Status
 
-Ready for planning. Do not implement until the proposed plan is reviewed and approved.
+Complete.
 
 ## Objective
 
@@ -218,7 +218,7 @@ Task listing should support:
 
 - search by title and description;
 - deterministic ordering;
-- ordering by selected safe fields such as created_at, updated_at, due_date, and priority where technically appropriate.
+- ordering by the selected safe fields title, created_at, updated_at, and due_date.
 
 Membership listing should support filtering by project and role.
 
@@ -450,3 +450,75 @@ Use authoritative current documentation for version-sensitive behavior.
 ```text
 feat: add authenticated task management API
 ```
+
+## Implementation record
+
+### Dependencies
+
+TASK-003 adds these direct runtime constraints, locked exactly in `app/uv.lock`:
+
+- `djangorestframework>=3.17.1,<3.18` (resolved 3.17.1);
+- `djangorestframework-simplejwt>=5.5.1,<5.6` (resolved 5.5.1);
+- `drf-spectacular>=0.30.0,<0.31` (resolved 0.30.0);
+- `django-filter>=26.1,<26.2` (resolved 26.1).
+
+### Routes and HTTP methods
+
+```text
+POST /api/v1/auth/token/
+POST /api/v1/auth/token/refresh/
+POST /api/v1/auth/token/verify/
+GET  /api/v1/users/me/
+GET, POST /api/v1/projects/
+GET, PATCH, DELETE /api/v1/projects/{id}/
+GET, POST /api/v1/memberships/
+GET, PATCH, DELETE /api/v1/memberships/{id}/
+GET, POST /api/v1/tasks/
+GET, PATCH, DELETE /api/v1/tasks/{id}/
+GET /api/schema/
+GET /api/docs/
+```
+
+Resource updates are PATCH-only; PUT returns 405. Memberships use flat routes and `?project=<id>` filtering. No API root or nested-router dependency is introduced.
+
+### Authentication and public routes
+
+Application endpoints use only Simple JWT bearer authentication and `IsAuthenticated`. Access tokens last 15 minutes and refresh tokens one day; refresh rotation, blacklisting, and last-login updates are disabled. JWTs use HS256 with required `JWT_SIGNING_KEY`, which must be non-empty and is distinct from Django's `SECRET_KEY`. The local example value is deliberately unsafe. Production must provide the signing key through secret management; asymmetric signing and key rotation are deferred.
+
+Token obtain/refresh/verify, schema, and Swagger use explicit empty authentication classes plus `AllowAny`. They are documented as public in the generated schema. `/api/v1/users/me/` and every project, membership, and task operation are documented as JWT bearer protected. Swagger does not persist authorization in browser storage.
+
+### Serialization and authorization
+
+`/users/me/` exposes only ID, username, email, first name, and last name. Resource summaries expose only safe user identity fields and omit member email addresses. Owner and creator are server-controlled. Task project, membership project, and membership user are create-only; immutable input on an update returns 400 rather than being silently ignored.
+
+| Action | Owner | Manager | Member | Unrelated user |
+| --- | --- | --- | --- | --- |
+| Project read | Allow | Allow | Allow | Excluded / 404 |
+| Project patch/delete | Allow | 403 | 403 | 404 |
+| Membership read | Allow | Allow | Allow | Excluded / 404 |
+| Membership create/patch/delete | Allow | 403 | 403 | Inaccessible project not disclosed |
+| Task read | Allow | Allow | Allow | Excluded / 404 |
+| Task create/patch | Allow | Allow | 403 | Inaccessible project not disclosed |
+| Task delete | Allow | 403 | 403 | 404 |
+
+`get_queryset()` access-scopes projects to owner/member rows, and memberships/tasks to those accessible projects. This protects lists and causes inaccessible detail lookups to return 404. Object permissions remain a second control for visible-object mutations. Create permissions are checked against the validated project because DRF does not apply object permissions during creation.
+
+Domain `ValidationError` raised by `save() -> full_clean()` is converted to DRF field or `non_field_errors` 400 responses. Duplicate membership is checked normally in the serializer. Its unique-constraint race fallback inserts inside an inner `transaction.atomic()` savepoint, catches `IntegrityError` only after that block exits, then returns a duplicate 400 only if the exact project/user row exists. Unrelated integrity errors are re-raised without database text in a response.
+
+### Collections and performance
+
+All collections use page-number pagination (20 default, client `page_size` up to 100). Projects support name search and safe ordering. Memberships filter by `project` and `role`. Tasks filter by project, status, priority, assignee, exact/range due date, and unassigned state; they search title/description and order by title, due date, created date, or updated date. Ordering appends ID as a deterministic tie-breaker. Priority is filterable but intentionally not sortable because stored text order is not business-priority order.
+
+Project querysets select owners; membership querysets select project, project owner, and user; task querysets select project, project owner, creator, and assignee. No new index is added before measured workload justifies one.
+
+### OpenAPI, tests, and manual verification
+
+drf-spectacular serves `/api/schema/` and `/api/docs/`; request/response components are split so read-only fields are visible in the schema. The automated suite covers token flows, public/protected routes, current-user boundaries, resource authorization, list isolation, immutable relationships, validation conversion, duplicate savepoint handling, filters, search, ordering, schema security, and Swagger availability.
+
+Final automated validation completed with Python 3.13.14, Django 5.2.16, and PostgreSQL 17: all 33 API tests passed and the complete project suite passed with 73 tests. Ruff formatting and lint checks passed, Django system checks passed, the migration drift check reported no new migrations, and `spectacular --validate` schema generation passed.
+
+Manual Swagger verification completed successfully. Swagger UI loaded at `/api/docs/`; unauthenticated `GET /api/v1/users/me/` returned 401; token obtain returned 200; and authenticated `GET /api/v1/users/me/` returned 200 with only the approved fields. Project creation returned 201 with the authenticated user assigned automatically as owner. Project listing returned 200 with pagination, retrieval returned 200, and PATCH returned 200. Attempts to change the project owner returned 400. TASK-003 is complete.
+
+### Limitations
+
+No registration, password reset, social login, cookie API authentication, invitations, ownership transfer, logout, blacklist, refresh rotation, rate limiting, frontend, background jobs, containerization, AWS, Terraform, or CI/CD is included. Bearer tokens require HTTPS outside local development. Cross-row membership validation has unavoidable concurrency limits beyond the exact duplicate savepoint case, and historical former-member task references remain intentionally subject to current-access validation on later ordinary saves.

@@ -16,8 +16,17 @@ Including another URLconf
 """
 
 from django.contrib import admin
-from django.urls import path
+from django.urls import include, path
+
+from apps.api.views import PublicSchemaView, PublicSwaggerView
 
 urlpatterns = [
     path("admin/", admin.site.urls),
+    path("api/v1/", include("apps.api.urls")),
+    path("api/schema/", PublicSchemaView.as_view(), name="api-schema"),
+    path(
+        "api/docs/",
+        PublicSwaggerView.as_view(url_name="api-schema"),
+        name="api-docs",
+    ),
 ]
