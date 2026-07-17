@@ -26,7 +26,15 @@ TASK-002 adds the task-management domain and its Django Admin interface:
 
 Project owners have access without a membership row. Removing a membership does not rewrite historical tasks, but a later ordinary task save revalidates current creator and assignee access. Ordinary model saves run full model validation; bulk model writes are not an approved domain write path.
 
-The REST API, JWT authentication, application container, AWS infrastructure, and delivery workflows are not implemented yet.
+TASK-003 adds the authenticated REST API:
+
+- JWT bearer authentication with obtain, refresh, and verify routes;
+- current-user, project, membership, and task endpoints under `/api/v1/`;
+- owner, manager, and member authorization with access-scoped querysets;
+- page-number pagination, filtering, search, and safe ordering;
+- OpenAPI schema at `http://127.0.0.1:8000/api/schema/` and Swagger UI at `http://127.0.0.1:8000/api/docs/`.
+
+The application container, AWS infrastructure, and delivery workflows are not implemented yet.
 
 ## Repository layout
 
@@ -66,6 +74,8 @@ uv run pytest
 
 The committed `.env.example` contains deliberately unsafe local-development values. Replace them in your ignored `.env` when needed, and keep `POSTGRES_*` values consistent with `DATABASE_URL`. URL-encode reserved characters if you choose a database password that contains them.
 
+`JWT_SIGNING_KEY` is required and deliberately separate from `DJANGO_SECRET_KEY`. The example value is unsafe and local-only; production must provide a high-entropy signing key through secret management. Do not use an empty value or commit a real signing key.
+
 For an ordinary subsequent database start, the shorter command is:
 
 ```powershell
@@ -88,6 +98,27 @@ Django Admin is available at `http://127.0.0.1:8000/admin/`. Create a local admi
 uv run python manage.py createsuperuser
 ```
 
+## API and Swagger
+
+The API requires `Authorization: Bearer <access-token>` except for token, schema, and Swagger routes:
+
+```text
+POST /api/v1/auth/token/
+POST /api/v1/auth/token/refresh/
+POST /api/v1/auth/token/verify/
+GET  /api/v1/users/me/
+GET, POST /api/v1/projects/
+GET, PATCH, DELETE /api/v1/projects/{id}/
+GET, POST /api/v1/memberships/
+GET, PATCH, DELETE /api/v1/memberships/{id}/
+GET, POST /api/v1/tasks/
+GET, PATCH, DELETE /api/v1/tasks/{id}/
+GET /api/schema/
+GET /api/docs/
+```
+
+Use Swagger UI to obtain a local token, select **Authorize**, paste the raw access token, and try protected operations. Projects search by `search`; memberships filter by `project` and `role`; tasks support `project`, `status`, `priority`, `assignee`, `due_date`, `due_date_after`, `due_date_before`, `unassigned`, `search`, and `ordering`. Collections use `page` and optional `page_size` (maximum 100).
+
 ## Validation
 
 From `app/`, with PostgreSQL healthy:
@@ -106,7 +137,10 @@ uv run python manage.py makemigrations --check --dry-run
 uv run python manage.py migrate
 uv run python manage.py showmigrations users projects tasks --plan
 uv run pytest
+uv run python manage.py spectacular --validate --file .tmp-task-003-schema.yml
 ```
+
+Inspect the schema validation result, then remove only `.tmp-task-003-schema.yml`.
 
 ## Stop the local database
 
