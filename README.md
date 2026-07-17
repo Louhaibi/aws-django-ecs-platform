@@ -15,14 +15,25 @@ TASK-001 establishes the application foundation under `app/`:
 - pytest and pytest-django tests;
 - Ruff formatting and linting.
 
-The task-management domain, REST API, JWT authentication, application container, AWS infrastructure, and delivery workflows are not implemented yet.
+TASK-002 adds the task-management domain and its Django Admin interface:
+
+- projects with immutable owners;
+- explicit member and manager project memberships;
+- tasks with immutable creators, optional assignees and due dates, status, and priority;
+- owner-or-member validation for task creators and assignees;
+- database constraints for membership uniqueness and supported choice values;
+- PostgreSQL-backed model, constraint, lifecycle, and Admin tests.
+
+Project owners have access without a membership row. Removing a membership does not rewrite historical tasks, but a later ordinary task save revalidates current creator and assignee access. Ordinary model saves run full model validation; bulk model writes are not an approved domain write path.
+
+The REST API, JWT authentication, application container, AWS infrastructure, and delivery workflows are not implemented yet.
 
 ## Repository layout
 
 ```text
 .
 ├── app/                  # Django application and local PostgreSQL service
-│   ├── apps/             # Domain Django applications
+│   ├── apps/             # Users, projects, and tasks applications
 │   ├── config/           # Django project configuration
 │   ├── tests/            # Project-level tests
 │   ├── compose.yaml      # Local PostgreSQL only
@@ -93,7 +104,7 @@ uv run ruff check .
 uv run python manage.py check
 uv run python manage.py makemigrations --check --dry-run
 uv run python manage.py migrate
-uv run python manage.py showmigrations users --plan
+uv run python manage.py showmigrations users projects tasks --plan
 uv run pytest
 ```
 
