@@ -7,8 +7,8 @@
 | TASK-001 | Project bootstrap | Complete |
 | TASK-002 | Domain models and Django Admin | Complete |
 | TASK-003 | Authenticated REST API, JWT, permissions, filtering, pagination, and OpenAPI | Complete |
-| TASK-004 | Django containerization and full local Compose stack | Next |
-| TASK-005 | GitHub Actions CI | Planned |
+| TASK-004 | Django containerization and full local Compose stack | Complete |
+| TASK-005 | GitHub Actions CI | Next |
 | TASK-006 | Terraform bootstrap and remote state | Planned |
 | TASK-007 | AWS network foundation | Planned |
 | TASK-008 | ECR repository and image publishing | Planned |

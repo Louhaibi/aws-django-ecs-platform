@@ -19,8 +19,10 @@ from django.contrib import admin
 from django.urls import include, path
 
 from apps.api.views import PublicSchemaView, PublicSwaggerView
+from config.views import health
 
 urlpatterns = [
+    path("health/", health, name="health"),
     path("admin/", admin.site.urls),
     path("api/v1/", include("apps.api.urls")),
     path("api/schema/", PublicSchemaView.as_view(), name="api-schema"),

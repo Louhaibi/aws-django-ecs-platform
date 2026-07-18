@@ -4,177 +4,123 @@ Thank you for your interest in contributing to this project.
 
 ## Development setup
 
-1. Clone the repository.
-2. Install Python 3.13, `uv`, and Docker Desktop.
-3. Move to the application directory:
-
-   ```powershell
-   cd app
-   ```
-
-4. Create the local environment file:
-
-   ```powershell
-   Copy-Item .env.example .env
-   ```
-
-5. Start PostgreSQL:
-
-   ```powershell
-   docker compose up -d --wait db
-   ```
-
-6. Synchronize the locked dependencies:
-
-   ```powershell
-   uv sync --locked --all-groups
-   ```
-
-7. Apply database migrations:
-
-   ```powershell
-   uv run python manage.py migrate
-   ```
-
-8. Run the Django development server:
-
-   ```powershell
-   uv run python manage.py runserver
-   ```
-
-The Django Admin interface is available at:
-
-```text
-http://127.0.0.1:8000/admin/
-```
-
-Create a local administrator when needed:
+Install Python 3.13, uv, Docker Desktop with Linux containers and Compose v2, and Git. From `app/`:
 
 ```powershell
-uv run python manage.py createsuperuser
+Copy-Item .env.example .env
+docker compose config --quiet
+docker compose up -d --build --wait --wait-timeout 120
+docker compose ps --all
 ```
 
-## Development workflow
+The ignored `.env` contains local-only values. Never commit it or put real credentials, keys, or tokens in an image or report. Inside Compose, Django connects to PostgreSQL through hostname `db`; host-based Django commands use `127.0.0.1` in `DATABASE_URL`.
 
-1. Update the local `main` branch.
-2. Create a focused feature branch.
-3. Keep each change limited to one clear purpose.
-4. Add or update tests for behavior changes.
-5. Update documentation when setup, behavior, or architecture changes.
-6. Run all required checks.
-7. Review the complete Git diff.
-8. Open a pull request against `main`.
-
-Example:
+The normal runtime is the full Compose stack. `migrate` must exit successfully before `web` starts. There is no source bind mount or autoreload, so rebuild after source or dependency changes:
 
 ```powershell
-git switch main
-git pull --ff-only origin main
-git switch -c feature/short-description
+docker compose build --pull
+docker compose up -d --wait --wait-timeout 120
 ```
 
-## Required checks
-
-Run the following commands from the `app` directory:
+Useful operations:
 
 ```powershell
+docker compose ps
+docker compose ps --all
+docker compose logs
+docker compose logs --follow web
+docker compose run --rm migrate
+docker compose run --rm web python manage.py shell
+docker compose run --rm web python manage.py createsuperuser
+docker compose exec web id
+```
+
+## Host development and required checks
+
+Use the locked host environment for tests, formatting, linting, and optional direct Django development:
+
+```powershell
+uv sync --locked --all-groups
+docker compose up -d --wait --wait-timeout 60 db
 uv lock --check
 uv run ruff format --check .
 uv run ruff check .
 uv run python manage.py check
 uv run python manage.py makemigrations --check --dry-run
+uv run python manage.py migrate
 uv run pytest
-uv run python manage.py spectacular --validate --file .tmp-task-003-schema.yml
+uv run python manage.py spectacular --validate --file .tmp-task-004-schema.yml
 ```
 
-Inspect the schema result and remove the generated `.tmp-task-003-schema.yml` after validation.
-
-When a change includes new migrations, also run:
+Inspect and remove only the temporary schema file after validation. A direct development server remains optional:
 
 ```powershell
-docker compose up -d --wait db
-uv run python manage.py migrate
+uv run python manage.py runserver
 ```
 
+## Container validation
+
+For container-related changes, also run:
+
+```powershell
+docker compose config --quiet
+docker compose build --pull
+docker compose up -d --wait --wait-timeout 120
+docker compose ps --all
+docker compose logs
+docker compose exec web id
+docker compose exec web python --version
+docker compose exec web python -m django --version
+docker compose exec web gunicorn --version
+docker compose exec web python manage.py check
+docker compose exec web python manage.py showmigrations --plan
+curl.exe --fail --show-error http://127.0.0.1:8000/health/
+```
+
+Confirm the image contains expected application files but no `.env`, host `.venv`, test source, or development tools. The runtime user must not be root.
+
+`/health/` is database-aware readiness/operational health. HTTP 200 means Django can query PostgreSQL. HTTP 503 means database-backed requests are not ready and does not necessarily mean Gunicorn has stopped. TASK-004 has no separate liveness route.
 
 ## Manual verification
 
-Behavior changes should also be verified manually after the automated checks pass.
+Open Swagger at `http://127.0.0.1:8000/api/docs/`. With a local-only user, obtain a JWT, authorize Swagger, call `GET /api/v1/users/me/`, and perform an authorized API operation. Do not record tokens, passwords, signing keys, or credentials.
 
-The pull request should explain:
-
-1. how to start the required services;
-2. which page, command, or interface to open;
-3. what behavior should be observed;
-4. how to stop the services safely;
-5. whether local test data remains afterward.
-
-For Django model and Admin changes, verify the behavior through:
-
-```text
-http://127.0.0.1:8000/admin/
-```
-
-For API changes, include example requests and the API documentation URL. Swagger UI is available at:
-
-```text
-http://127.0.0.1:8000/api/docs/
-```
-
-Use local-only users and tokens. Do not paste access tokens, refresh tokens, or signing keys into pull requests, issues, screenshots, or documentation.
-
-## Commit messages
-
-Use clear and focused commit messages.
-
-Examples:
-
-```text
-feat: add project membership validation
-fix: reject invalid task assignments
-test: cover project access rules
-docs: update local development instructions
-chore: update development tooling
-```
-
-## Pull requests
-
-Pull requests should describe:
-
-- the problem being solved;
-- the implementation approach;
-- how the change was tested;
-- manual verification steps;
-- security, operational, or cost implications;
-- known limitations or follow-up work.
-
-Keep pull requests focused and avoid combining unrelated changes.
-
-## Repository hygiene
-
-Do not commit:
-
-- `.env` files;
-- credentials or access tokens;
-- virtual environments;
-- Python cache directories;
-- test and lint caches;
-- local database files;
-- generated development data;
-- editor-specific temporary files.
-
-Stop the local PostgreSQL service when it is no longer needed:
+For persistence, create a disposable project, record only its numeric ID, and confirm it is retrievable. Then run:
 
 ```powershell
-docker compose stop db
+docker compose down
+docker compose up -d --wait --wait-timeout 120
 ```
 
-This keeps the named volume and local development data.
+Confirm `db` and `web` are healthy, `migrate` exited successfully, and the same project ID and name remain retrievable. Report whether the disposable record was deleted.
 
-To intentionally remove the local database data:
+Every pull request should state how to start the services, what was opened or called, the expected behavior, safe stop steps, and whether local data remains.
+
+## Development workflow
+
+1. Update `main` and create a focused feature branch.
+2. Keep changes limited to one purpose.
+3. Add or update focused tests.
+4. Update documentation for behavior or workflow changes.
+5. Run host and relevant container checks.
+6. Review the complete diff before opening a pull request.
+
+Use clear commit prefixes such as `feat`, `fix`, `test`, `docs`, `chore`, `refactor`, `ci`, or `infra`.
+
+## Safe shutdown and repository hygiene
 
 ```powershell
-docker compose down --volumes
+# Retains containers and data.
+docker compose stop
+
+# Removes containers/network and preserves postgres_data.
+docker compose down
 ```
 
-This command permanently deletes the local PostgreSQL volume and should only be used for an intentional reset.
+This command is an explicitly destructive reset and permanently deletes all local PostgreSQL data:
+
+```powershell
+docker compose down --volumes --remove-orphans
+```
+
+Do not commit `.env` files, credentials, tokens, virtual environments, caches, coverage output, local databases, generated test data, or editor artifacts.
