@@ -43,13 +43,15 @@ Use the locked host environment for tests, formatting, linting, and optional dir
 uv sync --locked --all-groups
 docker compose up -d --wait --wait-timeout 60 db
 uv lock --check
+uv run python --version
+uv run python -m django --version
 uv run ruff format --check .
 uv run ruff check .
 uv run python manage.py check
 uv run python manage.py makemigrations --check --dry-run
-uv run python manage.py migrate
+uv run python manage.py migrate --noinput
 uv run pytest
-uv run python manage.py spectacular --validate --file .tmp-task-004-schema.yml
+uv run python manage.py spectacular --validate --file .tmp-task-005-schema.yml
 ```
 
 Inspect and remove only the temporary schema file after validation. A direct development server remains optional:
@@ -65,6 +67,7 @@ For container-related changes, also run:
 ```powershell
 docker compose config --quiet
 docker compose build --pull
+docker image inspect --format '{{.Config.User}}' aws-django-ecs-platform-app:local
 docker compose up -d --wait --wait-timeout 120
 docker compose ps --all
 docker compose logs
@@ -78,6 +81,8 @@ curl.exe --fail --show-error http://127.0.0.1:8000/health/
 ```
 
 Confirm the image contains expected application files but no `.env`, host `.venv`, test source, or development tools. The runtime user must not be root.
+
+For the exact CI equivalent, the image inspection result must be `10001:10001`. CI stops after validating Compose, building the image, and checking that metadata; it does not start the full stack.
 
 `/health/` is database-aware readiness/operational health. HTTP 200 means Django can query PostgreSQL. HTTP 503 means database-backed requests are not ready and does not necessarily mean Gunicorn has stopped. TASK-004 has no separate liveness route.
 
@@ -96,6 +101,19 @@ Confirm `db` and `web` are healthy, `migrate` exited successfully, and the same 
 
 Every pull request should state how to start the services, what was opened or called, the expected behavior, safe stop steps, and whether local data remains.
 
+## GitHub Actions CI and merge policy
+
+The `CI` workflow runs for pull requests targeting `main` and again for pushes to `main`. The pull-request event tests GitHub's merge ref, which represents the proposed branch integrated with the current base. The main-branch push then validates the actual merge commit. Feature-branch pushes alone do not trigger CI, so run the host and container equivalents above before opening or updating the pull request.
+
+Both independent jobs are permanent required-check contracts:
+
+- `Application checks` uses PostgreSQL 17 and runs lock validation, locked synchronization, version reporting, Ruff formatting and linting, Django checks, migration-drift detection, migrations, pytest, and OpenAPI schema validation;
+- `Container build` runs `docker compose config --quiet`, builds with `docker compose build --pull`, and checks the non-root image user without pushing an image.
+
+No TASK-005 workflow publishes an artifact or image, deploys, accesses AWS, or uses production configuration. Future pushes to `main` may publish the already tested image and optionally deploy staging. Production must remain a reviewed version-tag, GitHub Release, or manual operation protected by an environment approval and must deploy the exact previously tested image digest.
+
+From TASK-005 onward, retain a small series of meaningful commits on each task branch and merge its pull request with **Create a merge commit**. Do not squash or rebase the pull request. Where repository settings permit it, enable merge commits and disable squash and rebase merging; do not require linear history.
+
 ## Development workflow
 
 1. Update `main` and create a focused feature branch.
@@ -104,6 +122,7 @@ Every pull request should state how to start the services, what was opened or ca
 4. Update documentation for behavior or workflow changes.
 5. Run host and relevant container checks.
 6. Review the complete diff before opening a pull request.
+7. Confirm `Application checks` and `Container build` pass on the pull request.
 
 Use clear commit prefixes such as `feat`, `fix`, `test`, `docs`, `chore`, `refactor`, `ci`, or `infra`.
 

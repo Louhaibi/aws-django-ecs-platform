@@ -15,12 +15,16 @@ TASK-004 adds a complete local container stack:
 - a database-aware operational-health endpoint at `/health/`;
 - loopback-only host ports and environment-based configuration.
 
-AWS infrastructure and delivery workflows are not implemented yet.
+TASK-005 adds GitHub Actions continuous integration with PostgreSQL-backed application validation and a non-publishing container build.
+
+AWS infrastructure, image publication, and deployment workflows are not implemented yet.
 
 ## Repository layout
 
 ```text
 .
+|-- .github/
+|   `-- workflows/ci.yml # Pull-request and main-branch CI
 |-- app/
 |   |-- apps/             # Users, projects, tasks, and REST API
 |   |-- config/           # Django project configuration and health view
@@ -119,24 +123,34 @@ From `app/`, with PostgreSQL healthy:
 ```powershell
 uv lock --check
 uv sync --locked --all-groups
+uv run python --version
+uv run python -m django --version
 uv run ruff format --check .
 uv run ruff check .
 uv run python manage.py check
 uv run python manage.py makemigrations --check --dry-run
-uv run python manage.py migrate
+uv run python manage.py migrate --noinput
 uv run pytest
-uv run python manage.py spectacular --validate --file .tmp-task-004-schema.yml
+uv run python manage.py spectacular --validate --file .tmp-task-005-schema.yml
 docker compose config --quiet
 docker compose build --pull
-docker compose up -d --wait --wait-timeout 120
-docker compose ps --all
-docker compose logs
-docker compose exec web id
-docker compose exec web python manage.py check
-docker compose exec web python manage.py showmigrations --plan
+docker image inspect --format '{{.Config.User}}' aws-django-ecs-platform-app:local
 ```
 
-Inspect the schema result, then remove only `.tmp-task-004-schema.yml`.
+The image inspection result must be `10001:10001`. Inspect the schema result, then remove only `.tmp-task-005-schema.yml`.
+
+## Continuous integration
+
+The `CI` workflow has two independent, stable jobs:
+
+- `Application checks` installs the locked development environment with Python 3.13.14 and uv 0.11.29, uses a PostgreSQL 17 service, and runs the application commands listed above through schema validation;
+- `Container build` validates Compose, builds `aws-django-ecs-platform-app:local` with `--pull`, and verifies the image is configured to run as `10001:10001` without starting or pushing it.
+
+CI runs for pull requests targeting `main`, where GitHub tests the pull request merge ref, and runs again for pushes to `main`, where it validates the committed merge result. A push to a feature branch alone does not run CI; run the local equivalents before opening or updating a pull request. The workflow does not publish images, deploy, use AWS, or use production secrets.
+
+Repository rules for `main` should require both stable checks, `Application checks` and `Container build`. From TASK-005 onward, pull requests must be merged with **Create a merge commit**; squash merging and rebase merging should be disabled where repository settings permit it. This preserves the task branch's small, meaningful commit series under an explicit merge commit.
+
+Future delivery workflows may publish a tested image and optionally deploy staging after a push to `main`. Production deployment must remain a separate reviewed version-tag, GitHub Release, or manually dispatched operation that uses a protected production environment and deploys the exact previously tested image digest. No deployment is implemented by TASK-005.
 
 ## Persistence check
 
@@ -169,6 +183,6 @@ Do not use the destructive command during normal validation.
 
 ## Project direction
 
-Later tasks add Terraform-managed AWS infrastructure, ECR/ECS delivery, CI/CD, security, and observability. The current container image is designed for later ECR/ECS use, but no AWS capability is claimed here.
+Later tasks add Terraform-managed AWS infrastructure, ECR/ECS delivery, deployment automation, security, and observability. The current container image is designed for later ECR/ECS use, but no AWS capability or deployment is claimed here.
 
 See `docs/project-charter.md`, `docs/decisions/`, and `docs/tasks/` for approved scope and architectural decisions.

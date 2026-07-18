@@ -8,8 +8,8 @@
 | TASK-002 | Domain models and Django Admin | Complete |
 | TASK-003 | Authenticated REST API, JWT, permissions, filtering, pagination, and OpenAPI | Complete |
 | TASK-004 | Django containerization and full local Compose stack | Complete |
-| TASK-005 | GitHub Actions CI | Next |
-| TASK-006 | Terraform bootstrap and remote state | Planned |
+| TASK-005 | GitHub Actions CI | Complete |
+| TASK-006 | Terraform bootstrap and remote state | Next |
 | TASK-007 | AWS network foundation | Planned |
 | TASK-008 | ECR repository and image publishing | Planned |
 | TASK-009 | RDS PostgreSQL | Planned |
@@ -376,13 +376,13 @@ TASK-008 and TASK-009 can partly proceed in parallel after TASK-007, but the ord
 Create the permanent specification:
 
 ```text
-docs/tasks/TASK-004-django-containerization.md
+docs/tasks/TASK-006-terraform-bootstrap.md
 ```
 
 Create the feature branch:
 
 ```text
-feature/task-004-app-containerization
+feature/task-006-terraform-bootstrap
 ```
 
-The first Codex turn should inspect the current Compose configuration, Django settings, uv workflow, Docker/WSL environment, health-check requirements, and container security practices. It should produce a plan without editing files.
+The first Codex turn should inspect the existing infrastructure decisions, repository structure, Terraform and AWS provider requirements, remote-state security requirements, state-locking options, naming/tagging conventions, validation commands, and cost implications. It should produce a plan without editing files.
