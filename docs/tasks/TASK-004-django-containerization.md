@@ -2,7 +2,7 @@
 
 ## Status
 
-Ready for planning. Do not implement until the proposed plan is reviewed and approved.
+Complete
 
 ## Objective
 
@@ -457,3 +457,231 @@ Use authoritative current documentation for version-sensitive Docker, Compose, u
 ```text
 feat: containerize django application
 ```
+
+## Approved design and implementation record
+
+This section records the complete approved TASK-004 design, implemented result, and completed verification evidence.
+
+### Immutable image and build design
+
+The image is a multi-stage Linux image. During implementation, the requested tags were inspected through the local Docker engine with `docker buildx imagetools inspect`, and the immutable references were re-inspected to ensure each selected value was the top-level multi-platform OCI image-index digest—not a layer or architecture-specific child digest:
+
+```text
+python:3.13.14-slim-bookworm@sha256:9d7f287598e1a5a978c015ee176d8216435aaf335ed69ac3c38dd1bbb10e8d64
+ghcr.io/astral-sh/uv:0.11.29@sha256:eb2843a1e56fd9e30c7276ce1a52cba86e64c7b385f5e3279a0e08e02dd058fc
+```
+
+The named `uv` stage supplies `/uv` and `/uvx` to a Python builder stage. The builder sets `UV_COMPILE_BYTECODE=1`, `UV_LINK_MODE=copy`, and `UV_PYTHON_DOWNLOADS=never`, then runs:
+
+```text
+uv sync --locked --no-dev --no-install-project
+```
+
+Only `pyproject.toml` and `uv.lock` are copied before dependency installation, so source-only changes reuse the locked-dependency layer. A BuildKit cache mount retains uv downloads between builds. The runtime stage uses the same pinned Python reference and receives only `/app/.venv` plus application source. Runtime dependencies include Gunicorn 26.0.0; Ruff, pytest, pytest-django, uv itself, and other development dependencies are excluded. The committed lockfile remains authoritative, and an inconsistent lock fails the build.
+
+The runtime creates group and user `app` with fixed GID/UID 10001, no home, and a nologin shell. `/app`, its virtual environment, and source are owned by that identity, and the final image declares `USER 10001:10001`. Python is unbuffered, bytecode writes are disabled at runtime, `/app/.venv/bin` is on `PATH`, and the working directory is `/app`.
+
+Gunicorn is used instead of Django `runserver` because the same image can later be promoted to ECR/ECS. It binds `0.0.0.0:8000`, runs two sync workers, logs access and errors to standard streams, and disables Gunicorn 26's optional control socket because the deliberately home-less user cannot and need not create it. Gunicorn is PID 1 and receives container stop signals directly. Worker count and timeout tuning remain later measured decisions.
+
+The exact build-context exclusions are:
+
+```text
+.env
+.env.*
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+tests/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+build/
+dist/
+*.egg-info/
+*.log
+db.sqlite3
+*.sqlite3
+staticfiles/
+media/
+.git/
+.gitignore
+.codex/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+*~
+compose*.yaml
+compose*.yml
+.tmp-*
+TASK-*-plan-output.md
+TASK-*-output.md
+```
+
+Required source, migrations, `pyproject.toml`, and `uv.lock` remain in the context. Environment files, including the example, are excluded because Compose consumes the host example only when creating an ignored `.env`; the runtime source copy includes no environment file.
+
+Alternatives rejected for this task were a single-stage image, installing uv from the network in a `RUN` instruction, including dev tools in runtime, using root, and running `runserver`. Those options would reduce separation or fidelity and make the resulting artifact less suitable for later container deployment.
+
+### Compose services, startup, and persistence
+
+`compose.yaml` defines one application image, `aws-django-ecs-platform-app:local`, used by two application services:
+
+- `db` uses the existing `postgres:17` convention, reads local `POSTGRES_DB`, `POSTGRES_USER`, and `POSTGRES_PASSWORD`, publishes `127.0.0.1:${POSTGRES_PORT:-5432}:5432`, mounts `postgres_data:/var/lib/postgresql/data`, and checks readiness over TCP with `pg_isready` on `127.0.0.1`;
+- `migrate` uses the application image and runs `python manage.py migrate --noinput` only after `db` is healthy. It has no published port and must exit successfully;
+- `web` builds the shared image, waits for both a healthy database and successful migration service, publishes `127.0.0.1:${WEB_PORT:-8000}:8000`, and uses the image's Gunicorn command.
+
+Docker Compose reads the ignored `app/.env` file for interpolation. The Compose file then passes only the selected settings in each service's explicit `environment` mapping and constructs the application containers' `DATABASE_URL` with service hostname `db`. Unrelated values from the local environment file are not automatically passed into the application containers, and no `.env` file is copied into or baked into the image. Restart policy is `no`, appropriate for visible local failures, and web has a 30-second stop grace period. The web health check uses Python's standard library to request `/health/`; no diagnostic package is added to runtime.
+
+There is no source bind mount or second Compose file. Source and dependency changes require `docker compose build` followed by stack recreation. This is slower than autoreload but produces consistent Windows, WSL 2, Docker Desktop, and eventual ECS behavior without masking image contents or overwriting the Linux virtual environment.
+
+Migrations are deliberately a separate, idempotent one-shot service. A migration failure prevents web startup and remains visible through Compose status/logs. No database wait script or automatic reset is used. ECS must later run migrations as a controlled one-off deployment task; Compose dependency semantics must not be copied to a replicated ECS service.
+
+Host ports are loopback-only. From Windows or WSL 2, use `127.0.0.1:8000` and `127.0.0.1:5432`; `db` is resolvable only inside the Compose network. An ignored host-development `.env` uses a host `DATABASE_URL`; Compose overrides it for application containers. The example password is URL-safe because Compose interpolates it into a URL.
+
+Ordinary `docker compose stop` retains containers and the volume. Ordinary `docker compose down` removes containers and the network but preserves `postgres_data`. Only the following explicitly destructive reset removes all local database data:
+
+```powershell
+docker compose down --volumes --remove-orphans
+```
+
+That destructive command was not run during implementation validation.
+
+### Operational-health contract
+
+TASK-004 adds exactly one public, GET-only route: `GET /health/`. It is a database-aware readiness/operational-health endpoint, not pure process liveness. The view performs `SELECT 1` through Django's configured database connection, catches only `django.db.DatabaseError`, and returns no configuration, version, exception, or credential data.
+
+| Condition | Status | Exact JSON | Meaning |
+| --- | ---: | --- | --- |
+| PostgreSQL query succeeds | 200 | `{"status":"ok"}` | Django can currently query PostgreSQL and is ready for database-backed requests. |
+| Django raises `DatabaseError` | 503 | `{"status":"unhealthy"}` | The application is not ready for database-backed requests. Gunicorn may still be running. |
+| Non-GET request | 405 | Django method-not-allowed response | The endpoint is read-only. |
+
+The route is intentionally excluded from the REST API schema and Swagger because it is an operational route, not application API surface. Docker Compose uses it as the web readiness check. ECS/ALB design may later split process liveness and readiness; no extra route is added now.
+
+Focused tests assert the exact 200 and 503 fields, JSON content type, controlled mocked `OperationalError` behavior without exception leakage, GET-only behavior, and OpenAPI exclusion. A real readiness transition was also verified: PostgreSQL was stopped, `/health/` returned HTTP 503 with `{"status":"unhealthy"}` while the web container remained running, PostgreSQL was restarted and became healthy, and the endpoint returned HTTP 200 with `{"status":"ok"}`.
+
+### Developer commands
+
+```powershell
+# Configure, build, and start
+Copy-Item .env.example .env
+docker compose config --quiet
+docker compose build --pull
+docker compose up -d --wait --wait-timeout 120
+
+# Observe
+docker compose ps
+docker compose ps --all
+docker compose logs
+docker compose logs --follow web
+
+# Operate Django
+docker compose run --rm migrate
+docker compose run --rm web python manage.py shell
+docker compose run --rm web python manage.py createsuperuser
+
+# Inspect runtime
+docker compose exec web id
+docker compose exec web python --version
+docker compose exec web python -m django --version
+docker compose exec web gunicorn --version
+docker compose exec web python manage.py check
+docker compose exec web python manage.py showmigrations --plan
+
+# Check host endpoints
+curl.exe --fail --show-error http://127.0.0.1:8000/health/
+curl.exe --include http://127.0.0.1:8000/api/v1/users/me/
+
+# Stop safely
+docker compose stop
+docker compose down
+```
+
+Host lint/test development remains:
+
+```powershell
+uv sync --locked --all-groups
+docker compose up -d --wait --wait-timeout 60 db
+uv run python manage.py migrate
+uv run python manage.py runserver
+```
+
+### Automated and container verification results
+
+Implementation-time results on 2026-07-18:
+
+- `uv lock --check`: passed, 30 packages resolved;
+- `uv sync --locked --all-groups`: passed;
+- Python 3.13.14 and Django 5.2.16 verified;
+- `ruff format --check .`: passed for 52 files;
+- `ruff check .`: passed;
+- `python manage.py check`: no issues;
+- `python manage.py makemigrations --check --dry-run`: passed with no migration generated;
+- `python manage.py migrate`: passed;
+- `pytest`: 76 passed in 248.85 seconds;
+- `spectacular --validate`: passed and its temporary schema file was removed;
+- `docker compose config --quiet`: passed;
+- `docker compose build --pull`: passed using both immutable image references;
+- `docker compose up -d --wait --wait-timeout 120`: passed;
+- `db` and `web`: healthy; `migrate`: exited 0 with no migrations pending;
+- runtime identity: `uid=10001(app) gid=10001(app)`;
+- runtime versions: Python 3.13.14, Django 5.2.16, Gunicorn 26.0.0;
+- image config: `USER 10001:10001`, workdir `/app`, expected Gunicorn command;
+- fresh startup logs: two Gunicorn sync workers, no control-socket error, and clean migration completion;
+- host `/health/`: 200 with exact healthy JSON;
+- host `/api/docs/`: 200;
+- unauthenticated `/api/v1/users/me/`: 401 as expected;
+- database-outage readiness transition: controlled 503 while Gunicorn remained running, then 200 after database recovery.
+
+The runtime deliberately has no `uv` executable. This confirms the runtime-only dependency strategy rather than a failed requirement; uv remains confined to the build stage and host development environment.
+
+### Completed manual verification
+
+Manual verification completed successfully with local-only data and credentials:
+
+- Docker Compose `db` and `web` services became healthy;
+- the `migrate` service exited successfully with code 0;
+- `GET /health/` returned HTTP 200 with `{"status":"ok"}`;
+- Swagger UI rendered successfully through the Gunicorn container;
+- unauthenticated `GET /api/v1/users/me/` returned HTTP 401;
+- JWT token obtain succeeded;
+- authenticated `GET /api/v1/users/me/` returned HTTP 200;
+- an authenticated project or task endpoint returned HTTP 200;
+- a project was retrieved with the same ID and name before and after this ordinary Compose teardown and restart:
+
+  ```powershell
+  docker compose down
+  docker compose up -d --wait --wait-timeout 120
+  ```
+
+- ordinary `docker compose down` preserved the `postgres_data` named volume;
+- `docker compose down --volumes` was not run.
+
+No token, password, signing key, database credential, or other sensitive value is recorded.
+
+Observed local limitations:
+
+- `/` intentionally returns HTTP 404 because the project defines no root route;
+- Django Admin is functional, but Gunicorn does not serve its CSS because TASK-004 deliberately adds no static-file pipeline;
+- `DEBUG` remains enabled only for local development.
+
+TASK-004 does not implement Nginx, WhiteNoise, static-file deployment, AWS, ECR, ECS, or CI/CD.
+
+### Security, operational limitations, and later ECS compatibility
+
+- Committed example secrets are intentionally unsafe local placeholders. Runtime environment metadata is visible to sufficiently privileged local Docker users; later deployment must use managed secrets and least privilege.
+- Ports bind only to loopback, but local processes can connect. Gunicorn serves plain HTTP, so local JWTs must not be treated as production-secure; deployed traffic requires TLS.
+- Both external image references are immutable and therefore require deliberate digest refresh, vulnerability review, and rebuilds. They do not receive tag updates automatically. The existing `postgres:17` service remains a mutable local-development convention.
+- Database-aware health performs a small query on every check and intentionally removes the app from readiness during database outages. It does not prove migration currency or process liveness.
+- The non-root image does not yet enforce a read-only root filesystem, dropped capabilities, `no-new-privileges`, custom seccomp, or other later runtime hardening.
+- There is no Nginx, WhiteNoise, `collectstatic`, offline Swagger bundle, or production static/media pipeline. Admin styling and Swagger assets under Gunicorn remain a known manual-verification limitation.
+- No bind mount means no autoreload. Runtime excludes tests and development tools; host checks validate source while container checks validate the artifact.
+- No AWS, ECR, ECS, Terraform, CI/CD, TLS, backups, autoscaling, monitoring, or production secret delivery is implemented.
+
+The resulting image is nevertheless suitable as the input to later ECR/ECS work: it is Linux, immutable, self-contained, non-root, environment-configured, binds `0.0.0.0:8000`, logs to standard streams, receives signals as PID 1, and exposes a stable operational-health contract. Later tasks must decide image scanning/tagging/provenance, digest-based deployment, migration tasks, ALB checks and grace periods, liveness separation, task CPU/memory, Gunicorn sizing, database connection behavior, static assets, read-only filesystem feasibility, and graceful deployment timing.

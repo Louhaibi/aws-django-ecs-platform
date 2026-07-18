@@ -4,120 +4,113 @@ A production-oriented cloud and platform engineering portfolio project built aro
 
 ## Current implementation
 
-TASK-001 establishes the application foundation under `app/`:
+TASK-001 through TASK-003 provide the Python 3.13/Django 5.2 application, PostgreSQL-backed project and task domain, Django Admin, JWT-authenticated REST API, Swagger/OpenAPI, pytest, and Ruff.
 
-- Python 3.13 selected and managed through uv;
-- Django 5.2 LTS with reproducible dependencies in `uv.lock`;
-- environment-based Django settings with no SQLite fallback;
-- PostgreSQL 17 for local development through Docker Compose;
-- a minimal custom `users.User` model based on `AbstractUser`;
-- Django Admin;
-- pytest and pytest-django tests;
-- Ruff formatting and linting.
+TASK-004 adds a complete local container stack:
 
-TASK-002 adds the task-management domain and its Django Admin interface:
+- a reproducible, multi-stage Django image built from digest-pinned Python and uv images;
+- a non-root Gunicorn runtime with production dependencies only;
+- PostgreSQL 17 with a persistent named volume;
+- a one-shot migration service that must succeed before the web service starts;
+- a database-aware operational-health endpoint at `/health/`;
+- loopback-only host ports and environment-based configuration.
 
-- projects with immutable owners;
-- explicit member and manager project memberships;
-- tasks with immutable creators, optional assignees and due dates, status, and priority;
-- owner-or-member validation for task creators and assignees;
-- database constraints for membership uniqueness and supported choice values;
-- PostgreSQL-backed model, constraint, lifecycle, and Admin tests.
-
-Project owners have access without a membership row. Removing a membership does not rewrite historical tasks, but a later ordinary task save revalidates current creator and assignee access. Ordinary model saves run full model validation; bulk model writes are not an approved domain write path.
-
-TASK-003 adds the authenticated REST API:
-
-- JWT bearer authentication with obtain, refresh, and verify routes;
-- current-user, project, membership, and task endpoints under `/api/v1/`;
-- owner, manager, and member authorization with access-scoped querysets;
-- page-number pagination, filtering, search, and safe ordering;
-- OpenAPI schema at `http://127.0.0.1:8000/api/schema/` and Swagger UI at `http://127.0.0.1:8000/api/docs/`.
-
-The application container, AWS infrastructure, and delivery workflows are not implemented yet.
+AWS infrastructure and delivery workflows are not implemented yet.
 
 ## Repository layout
 
 ```text
 .
-├── app/                  # Django application and local PostgreSQL service
-│   ├── apps/             # Users, projects, and tasks applications
-│   ├── config/           # Django project configuration
-│   ├── tests/            # Project-level tests
-│   ├── compose.yaml      # Local PostgreSQL only
-│   ├── pyproject.toml    # Dependencies and tool configuration
-│   └── uv.lock           # Exact dependency resolution
-└── docs/                 # Charter, decisions, and task specifications
+|-- app/
+|   |-- apps/             # Users, projects, tasks, and REST API
+|   |-- config/           # Django project configuration and health view
+|   |-- tests/            # Project-level tests
+|   |-- .dockerignore     # Container build-context exclusions
+|   |-- Dockerfile        # Multi-stage non-root Gunicorn image
+|   |-- compose.yaml      # PostgreSQL, migration, and web services
+|   |-- pyproject.toml    # Dependencies and tool configuration
+|   `-- uv.lock           # Exact dependency resolution
+`-- docs/                 # Charter, decisions, roadmap, and task records
 ```
 
 ## Prerequisites
 
-- uv;
 - Docker Desktop running Linux containers with Docker Compose v2;
+- uv for host-based development checks;
 - Git.
 
-uv selects Python 3.13 from `app/.python-version` and creates `app/.venv`. Do not use an unrelated system Python environment for this project.
+Docker Desktop must be running before Compose commands. Windows PowerShell commands below also work from WSL 2 with the equivalent shell syntax. Host access uses `127.0.0.1`; the names `db` and `web` are Compose-network hostnames and are not host URLs.
 
-## Local setup
+## Container-first quick start
 
-Run application and Compose commands from `app/`:
+Run from `app/`:
 
 ```powershell
-Set-Location app
 Copy-Item .env.example .env
-uv sync --locked --all-groups
 docker compose config --quiet
+docker compose up -d --build --wait --wait-timeout 120
+docker compose ps
+docker compose ps --all
+```
+
+The committed example values are deliberately unsafe and local-only. Keep the ignored `.env` file out of Git. `JWT_SIGNING_KEY` is required and separate from `DJANGO_SECRET_KEY`. Keep the `POSTGRES_*` values consistent; Compose constructs the container-only `DATABASE_URL` with hostname `db`. Passwords used in that URL must be URL-safe.
+
+Expected state:
+
+- `db` is healthy on host `127.0.0.1:5432`;
+- `migrate` exits successfully after applying migrations;
+- `web` is healthy on `http://127.0.0.1:8000`.
+
+Open:
+
+- operational health: `http://127.0.0.1:8000/health/`;
+- Swagger UI: `http://127.0.0.1:8000/api/docs/`;
+- OpenAPI schema: `http://127.0.0.1:8000/api/schema/`;
+- Django Admin: `http://127.0.0.1:8000/admin/`.
+
+`GET /health/` is a database-aware readiness/operational-health endpoint, not pure process liveness. HTTP 200 with `{"status":"ok"}` means Django can query PostgreSQL. HTTP 503 with `{"status":"unhealthy"}` means the application is not ready for database-backed requests; Gunicorn may still be running. TASK-004 adds no separate liveness route.
+
+## Container operations
+
+```powershell
+# Build or rebuild after source/dependency changes
+docker compose build --pull
+docker compose up -d --wait --wait-timeout 120
+
+# Status and logs
+docker compose ps
+docker compose ps --all
+docker compose logs
+docker compose logs --follow web
+
+# Application operations
+docker compose run --rm migrate
+docker compose run --rm web python manage.py shell
+docker compose run --rm web python manage.py createsuperuser
+docker compose exec web id
+curl.exe --fail --show-error http://127.0.0.1:8000/health/
+```
+
+There is no source bind mount or autoreload. Rebuild the image after source or dependency changes, then recreate the stack. The runtime image excludes uv, Ruff, pytest, development dependencies, test source, and the host virtual environment.
+
+Gunicorn serves application responses but TASK-004 does not add a production static-file pipeline. Admin styling and offline Swagger assets are therefore not guaranteed through this runtime; static-file handling is deferred.
+
+## Host-based development workflow
+
+Host execution remains supported for tests, linting, and optional `runserver`. In the ignored `.env`, use a host database URL such as `postgresql://...@127.0.0.1:5432/...`, not the Compose-only hostname `db`.
+
+```powershell
+uv sync --locked --all-groups
 docker compose up -d --wait --wait-timeout 60 db
 uv run python manage.py migrate
-uv run pytest
-```
-
-The committed `.env.example` contains deliberately unsafe local-development values. Replace them in your ignored `.env` when needed, and keep `POSTGRES_*` values consistent with `DATABASE_URL`. URL-encode reserved characters if you choose a database password that contains them.
-
-`JWT_SIGNING_KEY` is required and deliberately separate from `DJANGO_SECRET_KEY`. The example value is unsafe and local-only; production must provide a high-entropy signing key through secret management. Do not use an empty value or commit a real signing key.
-
-For an ordinary subsequent database start, the shorter command is:
-
-```powershell
-docker compose up -d db
-```
-
-Use `docker compose ps` and wait for the service to report `healthy` before running database commands. The `--wait` form in the initial setup does this automatically.
-
-## Run Django
-
-After PostgreSQL is healthy and migrations are applied:
-
-```powershell
 uv run python manage.py runserver
 ```
 
-Django Admin is available at `http://127.0.0.1:8000/admin/`. Create a local administrator only when needed:
+The locked runtime dependency set includes Gunicorn; host development groups additionally include pytest, pytest-django, and Ruff.
 
-```powershell
-uv run python manage.py createsuperuser
-```
+## API and Swagger verification
 
-## API and Swagger
-
-The API requires `Authorization: Bearer <access-token>` except for token, schema, and Swagger routes:
-
-```text
-POST /api/v1/auth/token/
-POST /api/v1/auth/token/refresh/
-POST /api/v1/auth/token/verify/
-GET  /api/v1/users/me/
-GET, POST /api/v1/projects/
-GET, PATCH, DELETE /api/v1/projects/{id}/
-GET, POST /api/v1/memberships/
-GET, PATCH, DELETE /api/v1/memberships/{id}/
-GET, POST /api/v1/tasks/
-GET, PATCH, DELETE /api/v1/tasks/{id}/
-GET /api/schema/
-GET /api/docs/
-```
-
-Use Swagger UI to obtain a local token, select **Authorize**, paste the raw access token, and try protected operations. Projects search by `search`; memberships filter by `project` and `role`; tasks support `project`, `status`, `priority`, `assignee`, `due_date`, `due_date_after`, `due_date_before`, `unassigned`, `search`, and `ordering`. Collections use `page` and optional `page_size` (maximum 100).
+The API requires `Authorization: Bearer <access-token>` except for token, schema, Swagger, and health routes. In Swagger, use `POST /api/v1/auth/token/`, select **Authorize**, paste only the raw access token, and try `GET /api/v1/users/me/` plus an authorized project or task operation. Never copy tokens or local credentials into reports, screenshots, commits, issues, or pull requests.
 
 ## Validation
 
@@ -126,46 +119,56 @@ From `app/`, with PostgreSQL healthy:
 ```powershell
 uv lock --check
 uv sync --locked --all-groups
-uv run python --version
-uv run python -m django --version
-docker compose config --quiet
-docker compose ps
 uv run ruff format --check .
 uv run ruff check .
 uv run python manage.py check
 uv run python manage.py makemigrations --check --dry-run
 uv run python manage.py migrate
-uv run python manage.py showmigrations users projects tasks --plan
 uv run pytest
-uv run python manage.py spectacular --validate --file .tmp-task-003-schema.yml
+uv run python manage.py spectacular --validate --file .tmp-task-004-schema.yml
+docker compose config --quiet
+docker compose build --pull
+docker compose up -d --wait --wait-timeout 120
+docker compose ps --all
+docker compose logs
+docker compose exec web id
+docker compose exec web python manage.py check
+docker compose exec web python manage.py showmigrations --plan
 ```
 
-Inspect the schema validation result, then remove only `.tmp-task-003-schema.yml`.
+Inspect the schema result, then remove only `.tmp-task-004-schema.yml`.
 
-## Stop the local database
+## Persistence check
 
-Stop PostgreSQL while retaining its container and named volume:
-
-```powershell
-docker compose stop db
-```
-
-Remove the container and Compose network while retaining database data:
+After Swagger/JWT access works, create a disposable local project through the authenticated API and record only its numeric ID. Confirm it is retrievable, then run:
 
 ```powershell
 docker compose down
+docker compose up -d --wait --wait-timeout 120
 ```
 
-To start it again, run `docker compose up -d --wait db`.
+Obtain a fresh token if needed and confirm the same ID and project name are still retrievable. This proves ordinary `down` preserves the `postgres_data` named volume. Delete the disposable record afterward if desired.
 
-The following command deletes the named development volume and all local database data. Run it only when an intentional reset is required:
+## Safe stop and reset commands
 
 ```powershell
-docker compose down --volumes
+# Stop containers and retain them and all database data.
+docker compose stop
+
+# Remove containers/network but preserve postgres_data.
+docker compose down
 ```
+
+The following is an explicitly destructive reset. It permanently deletes the named PostgreSQL volume and all local database data:
+
+```powershell
+docker compose down --volumes --remove-orphans
+```
+
+Do not use the destructive command during normal validation.
 
 ## Project direction
 
-The project will incrementally add the task-management domain, API, container delivery, Terraform-managed AWS infrastructure, CI/CD, security, and observability. Documentation describes only capabilities that currently exist.
+Later tasks add Terraform-managed AWS infrastructure, ECR/ECS delivery, CI/CD, security, and observability. The current container image is designed for later ECR/ECS use, but no AWS capability is claimed here.
 
 See `docs/project-charter.md`, `docs/decisions/`, and `docs/tasks/` for approved scope and architectural decisions.

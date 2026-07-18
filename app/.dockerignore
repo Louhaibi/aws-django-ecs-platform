@@ -1,0 +1,51 @@
+# Secrets and environment files
+.env
+.env.*
+
+# Local Python environments and caches
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Tests and generated test/coverage output
+tests/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# Build and package output
+build/
+dist/
+*.egg-info/
+
+# Django/local generated data
+*.log
+db.sqlite3
+*.sqlite3
+staticfiles/
+media/
+
+# Git and repository-local tooling
+.git/
+.gitignore
+.codex/
+
+# Editors and operating systems
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# Compose-only and temporary reports
+compose*.yaml
+compose*.yml
+.tmp-*
+TASK-*-plan-output.md
+TASK-*-output.md

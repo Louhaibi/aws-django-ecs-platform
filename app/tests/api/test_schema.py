@@ -17,6 +17,8 @@ def test_schema_and_docs_are_public_and_schema_marks_security(api_client):
     assert docs_response.status_code == 200
 
     schema = json.loads(schema_response.content)
+    assert "/health/" not in schema["paths"]
+
     public_paths = (
         "/api/v1/auth/token/",
         "/api/v1/auth/token/refresh/",
