@@ -2,9 +2,9 @@
 
 ## Status
 
-Implemented — pending GitHub verification
+Complete
 
-Local implementation and validation do not complete this task. The status remains pending until the GitHub-hosted success and failure evidence, cleaned branch history, branch protection, and merge settings in the completion gate are confirmed.
+GitHub-hosted success and failure evidence, cleaned feature-branch history, the active `main` ruleset, and repository merge settings have been confirmed.
 
 ## Objective
 
@@ -110,59 +110,9 @@ Only uv's download cache is persisted, with invalidation tied to `app/uv.lock`. 
 
 ## PostgreSQL 17 service
 
-Only `Application checks` starts a service container:
+Only `Application checks` starts a `postgres:17` service container. The host job connects through the loopback-mapped PostgreSQL port, and a `pg_isready` health check must pass before application steps begin. The database configuration is disposable and CI-only. The application remains PostgreSQL-only; SQLite is not a fallback. The `postgres:17` major tag matches the project version but can move between PostgreSQL 17 patch releases.
 
-```yaml
-services:
-  postgres:
-    image: postgres:17
-    env:
-      POSTGRES_DB: task_platform_ci
-      POSTGRES_USER: task_platform_ci
-      POSTGRES_PASSWORD: ci-only-postgres-password
-    ports:
-      - 5432:5432
-    options: >-
-      --health-cmd "pg_isready -h 127.0.0.1 -U task_platform_ci -d task_platform_ci"
-      --health-interval 5s
-      --health-timeout 5s
-      --health-retries 12
-      --health-start-period 5s
-```
-
-The host job connects through `127.0.0.1:5432`. The health check must pass before application steps begin. The database, role, and password are fixed disposable CI placeholders. The application remains PostgreSQL-only; SQLite is not a fallback. The `postgres:17` major tag matches the project version but can move between PostgreSQL 17 patch releases.
-
-## CI-only environment values
-
-The `Application checks` job uses exactly:
-
-```yaml
-DATABASE_URL: postgresql://task_platform_ci:ci-only-postgres-password@127.0.0.1:5432/task_platform_ci
-DJANGO_ALLOWED_HOSTS: 127.0.0.1,localhost
-DJANGO_DEBUG: "false"
-DJANGO_SECRET_KEY: ci-only-django-secret-key-not-for-production
-JWT_ACCESS_TOKEN_MINUTES: "15"
-JWT_REFRESH_TOKEN_DAYS: "1"
-JWT_SIGNING_KEY: ci-only-jwt-signing-key-not-for-production
-```
-
-The `Container build` job uses exactly these Compose interpolation values:
-
-```yaml
-DJANGO_ALLOWED_HOSTS: 127.0.0.1,localhost
-DJANGO_DEBUG: "false"
-DJANGO_SECRET_KEY: ci-only-django-secret-key-not-for-production
-JWT_ACCESS_TOKEN_MINUTES: "15"
-JWT_REFRESH_TOKEN_DAYS: "1"
-JWT_SIGNING_KEY: ci-only-jwt-signing-key-not-for-production
-POSTGRES_DB: task_platform_ci
-POSTGRES_PASSWORD: ci-only-postgres-password
-POSTGRES_PORT: "5432"
-POSTGRES_USER: task_platform_ci
-WEB_PORT: "8000"
-```
-
-These values are public, low-value placeholders rather than secrets. CI does not create or read `.env`, dump the complete environment, or print expanded Compose configuration.
+The container job likewise uses non-sensitive CI-only Compose interpolation. CI does not create or read `.env`, dump the complete environment, or print expanded Compose configuration.
 
 ## Application command order
 
@@ -204,85 +154,88 @@ Quiet Compose validation checks interpolation and service structure without reve
 
 The job does not start the stack, push an image, publish an artifact, or use AWS. There is no cross-run Docker cache in TASK-005. The Dockerfile's BuildKit cache mount can help within a builder, but a fresh hosted runner is expected to perform a cold build. Cross-run `type=gha` caching can be considered later only after measuring hosted build duration and re-verifying any required Docker actions.
 
-## Job independence and expected failure behavior
+## Job independence and verified failure behavior
 
 Neither job declares `needs`, so both begin independently. A source-quality or test failure does not hide the container result, and a container failure does not hide application evidence. Branch protection must require both stable checks.
 
-Representative failure expectations are:
+The single implementation pull request confirmed these representative failures:
 
-| Temporary defect | Expected check | Expected failing step |
+| Temporary defect | Failed check | Failing step |
 | --- | --- | --- |
-| Ruff formatting or lint violation | `Application checks` | `Check formatting` or `Lint` |
-| Deliberately failing pytest assertion | `Application checks` | `Run tests` |
-| Invalid Dockerfile instruction or invalid Compose configuration | `Container build` | `Validate Compose configuration` or `Build application image` |
+| Ruff formatting defect | `Application checks` | `Check formatting` |
+| Lint-clean deterministic pytest defect | `Application checks` | `Run tests` |
+| Invalid Compose configuration | `Container build` | `Validate Compose configuration` |
 
 ## One-branch, one-pull-request failure demonstration
 
-TASK-005 uses only `feature/task-005-github-actions-ci` and its single implementation pull request. Do not create a probe branch or a second pull request.
+TASK-005 used only `feature/task-005-github-actions-ci` and its single implementation pull request. No probe branch or second pull request was created.
 
-First push valid implementation content and observe both permanent checks pass once. Only after the developer explicitly authorizes temporary failure commits and pushes, demonstrate failures sequentially on that same branch and pull request:
+Valid content first passed both permanent checks on the pull-request merge ref. The authorized temporary failures were then demonstrated sequentially on that same branch and pull request:
 
-1. introduce one minimal Ruff-only defect, commit and push it, record the GitHub run URL plus the failing job and step, then restore valid content in a new commit and push;
-2. introduce one minimal failing pytest assertion, commit and push it, record the run evidence, then restore valid content in a new commit and push;
-3. introduce one minimal Dockerfile or Compose defect, commit and push it, record the `Container build` evidence, then restore valid content in a new commit and push.
+1. a minimal Ruff formatting defect failed `Application checks` at `Check formatting`;
+2. a lint-clean deterministic pytest defect failed `Application checks` at `Run tests`;
+3. an invalid Compose configuration failed `Container build` at `Validate Compose configuration`.
 
-Wait for each expected failure before restoring it so the evidence is unambiguous. Do not combine probes, use production configuration, print credentials, weaken a real test, or merge a failing revision. Local failures are useful preparation but do not satisfy this hosted failure-evidence gate.
+Each expected failure was observed before valid content was restored. No failing revision was retained in the final branch.
 
 ## Temporary history cleanup
 
-After every failure and restoration has been observed, and before final merge:
+After all failure evidence and restorations were observed, the temporary failure and restoration commits were removed from the unmerged feature branch with:
 
-1. confirm the current branch is the unmerged `feature/task-005-github-actions-ci` branch and the worktree is clean;
-2. fetch and inspect the current `main`, branch log, and branch diff;
-3. with explicit developer authorization, run `git rebase -i main`;
-4. remove every temporary failure and restoration commit while retaining only meaningful TASK-005 commits;
-5. inspect the rewritten status, log, and diff;
-6. with explicit developer authorization, run `git push --force-with-lease`;
-7. wait for both permanent checks to run and pass again on the cleaned branch.
+```text
+git rebase -i main
+```
+
+The cleaned branch was pushed with:
+
+```text
+git push --force-with-lease
+```
 
 `--force-with-lease` is mandatory because it refuses to overwrite the remote branch when its current tip no longer matches the locally expected remote-tracking state. Plain `--force` lacks that protection and is prohibited. If the lease fails, stop, fetch, inspect the remote change, and request direction rather than overriding it.
 
-History rewriting is allowed only for this unmerged TASK-005 feature branch. Never rebase or force-push `main`. The final branch should retain only meaningful commits such as:
+History rewriting was limited to the unmerged TASK-005 feature branch; `main` was not rewritten. The final feature history contains only:
 
 ```text
 docs: define GitHub Actions CI task
-ci: add application validation workflow
-ci: add container build validation
-docs: complete GitHub Actions CI task
+ci: add GitHub Actions validation workflow
+docs: document GitHub Actions CI
 ```
 
-The pull request itself must then be merged using **Create a merge commit**. Do not squash or rebase the pull request.
+Both permanent CI checks passed again after the cleaned branch was pushed. The pull request remains subject to the documented **Create a merge commit** policy; it must not be squash-merged or rebase-merged.
 
 ## Branch protection and repository merge settings
 
-After the first successful hosted run, configure or confirm the repository rules for `main` in GitHub:
+The `main` ruleset is active and confirms:
 
 - require a pull request before merging;
 - require `Application checks`;
 - require `Container build`;
 - require conversation resolution;
+- require branches to be up to date before merging;
 - block force pushes;
 - block branch deletion;
-- do not require linear history;
-- do not require external approval while the repository has one contributor.
+- do not require linear history.
 
-Where repository settings permit it, enable merge commits and disable squash merging and rebase merging. The final TASK-005 pull request must use **Create a merge commit**. These settings are manual verification work and are not configured by this repository change.
+Repository merge settings enable merge commits and disable squash merging and rebase merging. TASK-005 therefore retains the **Create a merge commit** policy.
 
-## Completion gate
+## GitHub verification and completion evidence
 
-Keep the permanent status `Implemented — pending GitHub verification` and do not update `docs/PROJECT-ROADMAP.md` until the developer confirms every item:
+The completion gate is satisfied:
 
-- `Application checks` passed on GitHub;
-- `Container build` passed on GitHub;
-- a Ruff failure was detected by `Application checks`;
-- a pytest failure was detected by `Application checks`;
-- a Dockerfile or Compose failure was detected by `Container build`;
-- all temporary failure and restoration commits were removed from final feature-branch history;
+- the valid pull-request merge-ref run passed `Application checks`;
+- the valid pull-request merge-ref run passed `Container build`;
+- a Ruff formatting defect failed `Application checks` at `Check formatting`;
+- a lint-clean deterministic pytest defect failed `Application checks` at `Run tests`;
+- an invalid Compose configuration failed `Container build` at `Validate Compose configuration`;
+- valid content was restored after every failure;
+- all temporary failure and restoration commits were removed with `git rebase -i main`;
+- the cleaned branch was pushed with `git push --force-with-lease`;
+- final feature history contains only the three meaningful commits recorded above;
 - the cleaned branch ran and passed both permanent jobs again;
-- `main` branch protection or rules require both stable checks;
-- merge commits are enabled and squash/rebase merging are disabled where repository settings permit it.
-
-Local workflow inspection and local command success are not sufficient. After this gate is confirmed, update this task to `Complete`, update the roadmap so TASK-006 becomes next, validate the final documentation, and merge with **Create a merge commit**.
+- the active `main` ruleset requires pull requests, both stable checks, conversation resolution, and up-to-date branches;
+- the ruleset blocks deletion and force pushes of `main` and does not require linear history;
+- merge commits are enabled, while squash and rebase merging are disabled.
 
 ## Future CI/CD policy
 
@@ -334,14 +287,11 @@ The disposable PostgreSQL container used no named volume and was stopped with au
 
 ## Risks and limitations
 
-- This workflow has not yet run on GitHub, so hosted-runner action resolution, PostgreSQL service startup, check naming, and timing remain unverified until the completion gate.
 - `ubuntu-latest` and the `postgres:17` tag are moving environments; exact Python, uv, action commits, and Dockerfile bases reduce but do not eliminate upstream variation.
 - Each hosted container job begins without a cross-run Docker cache; cold-build duration must be observed before a later optimization is justified.
 - A manual dispatch on `main` shares concurrency with a `main` push and may cancel or be cancelled by it.
-- Required checks cannot be selected for branch protection until GitHub has observed their stable names.
 - Feature-branch pushes without an open pull request rely on documented local validation.
 - Runtime startup, operational health, Swagger behavior, and persistence remain manual Compose checks; TASK-005's container job intentionally does not start the stack.
-- Repository branch protection and merge-method settings are manual and remain unverified in this implementation phase.
 
 ## Out of scope
 
