@@ -1,0 +1,139 @@
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+    working-directory: app
+
+jobs:
+  application:
+    name: Application checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      DATABASE_URL: postgresql://task_platform_ci:ci-only-postgres-password@127.0.0.1:5432/task_platform_ci
+      DJANGO_ALLOWED_HOSTS: 127.0.0.1,localhost
+      DJANGO_DEBUG: "false"
+      DJANGO_SECRET_KEY: ci-only-django-secret-key-not-for-production
+      JWT_ACCESS_TOKEN_MINUTES: "15"
+      JWT_REFRESH_TOKEN_DAYS: "1"
+      JWT_SIGNING_KEY: ci-only-jwt-signing-key-not-for-production
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: task_platform_ci
+          POSTGRES_USER: task_platform_ci
+          POSTGRES_PASSWORD: ci-only-postgres-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U task_platform_ci -d task_platform_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+          --health-start-period 5s
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.13.14"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: "0.11.29"
+          enable-cache: true
+          cache-dependency-glob: app/uv.lock
+          working-directory: app
+
+      - name: Check dependency lock
+        run: uv lock --check
+
+      - name: Synchronize dependencies
+        run: uv sync --locked --all-groups
+
+      - name: Show Python version
+        run: uv run python --version
+
+      - name: Show Django version
+        run: uv run python -m django --version
+
+      - name: Check formatting
+        run: uv run ruff format --check .
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Run Django system checks
+        run: uv run python manage.py check
+
+      - name: Check migration drift
+        run: uv run python manage.py makemigrations --check --dry-run
+
+      - name: Apply migrations
+        run: uv run python manage.py migrate --noinput
+
+      - name: Run tests
+        run: uv run pytest
+
+      - name: Validate OpenAPI schema
+        run: |
+          schema_file="$RUNNER_TEMP/task-005-schema.yml"
+          trap 'rm -f "$schema_file"' EXIT
+          uv run python manage.py spectacular --validate --file "$schema_file"
+
+  container:
+    name: Container build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      DJANGO_ALLOWED_HOSTS: 127.0.0.1,localhost
+      DJANGO_DEBUG: "false"
+      DJANGO_SECRET_KEY: ci-only-django-secret-key-not-for-production
+      JWT_ACCESS_TOKEN_MINUTES: "15"
+      JWT_REFRESH_TOKEN_DAYS: "1"
+      JWT_SIGNING_KEY: ci-only-jwt-signing-key-not-for-production
+      POSTGRES_DB: task_platform_ci
+      POSTGRES_PASSWORD: ci-only-postgres-password
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: task_platform_ci
+      WEB_PORT: "8000"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Validate Compose configuration
+        run: docker compose config --quiet
+
+      - name: Build application image
+        run: docker compose build --pull
+
+      - name: Verify non-root image user
+        run: |
+          image_user="$(docker image inspect --format '{{.Config.User}}' aws-django-ecs-platform-app:local)"
+          printf 'Image runtime user: %s\n' "$image_user"
+          test "$image_user" = "10001:10001"
