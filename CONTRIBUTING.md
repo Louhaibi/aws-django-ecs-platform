@@ -1,7 +1,5 @@
 # Contributing
 
-Thank you for your interest in contributing to this project.
-
 ## Development setup
 
 Install Python 3.13, uv, Docker Desktop with Linux containers and Compose v2, and Git. From `app/`:
@@ -13,36 +11,21 @@ docker compose up -d --build --wait --wait-timeout 120
 docker compose ps --all
 ```
 
-The ignored `.env` contains local-only values. Never commit it or put real credentials, keys, or tokens in an image or report. Inside Compose, Django connects to PostgreSQL through hostname `db`; host-based Django commands use `127.0.0.1` in `DATABASE_URL`.
+The normal runtime is the Compose stack. The `migrate` service must complete successfully before `web` starts. There is no source bind mount or autoreload, so rebuild after source or dependency changes.
 
-The normal runtime is the full Compose stack. `migrate` must exit successfully before `web` starts. There is no source bind mount or autoreload, so rebuild after source or dependency changes:
+## Environment configuration
 
-```powershell
-docker compose build --pull
-docker compose up -d --wait --wait-timeout 120
-```
+Keep `.env` local and out of version control. Do not place real credentials, keys, or tokens in an image, commit, issue, or pull request.
 
-Useful operations:
+Inside Compose, Django connects to PostgreSQL through hostname `db`. Host-based Django commands must use a database URL that targets `127.0.0.1`. Keep the database settings consistent with the values supplied to Compose.
 
-```powershell
-docker compose ps
-docker compose ps --all
-docker compose logs
-docker compose logs --follow web
-docker compose run --rm migrate
-docker compose run --rm web python manage.py shell
-docker compose run --rm web python manage.py createsuperuser
-docker compose exec web id
-```
+## Local validation
 
-## Host development and required checks
-
-Use the locked host environment for tests, formatting, linting, and optional direct Django development:
+From `app/`, with PostgreSQL healthy:
 
 ```powershell
-uv sync --locked --all-groups
-docker compose up -d --wait --wait-timeout 60 db
 uv lock --check
+uv sync --locked --all-groups
 uv run python --version
 uv run python -m django --version
 uv run ruff format --check .
@@ -51,18 +34,14 @@ uv run python manage.py check
 uv run python manage.py makemigrations --check --dry-run
 uv run python manage.py migrate --noinput
 uv run pytest
-uv run python manage.py spectacular --validate --file .tmp-task-005-schema.yml
+uv run python manage.py spectacular --validate --file .tmp-schema.yml
 ```
 
-Inspect and remove only the temporary schema file after validation. A direct development server remains optional:
-
-```powershell
-uv run python manage.py runserver
-```
+Remove `.tmp-schema.yml` after validation.
 
 ## Container validation
 
-For container-related changes, also run:
+For container-related changes, also run from `app/`:
 
 ```powershell
 docker compose config --quiet
@@ -70,76 +49,45 @@ docker compose build --pull
 docker image inspect --format '{{.Config.User}}' aws-django-ecs-platform-app:local
 docker compose up -d --wait --wait-timeout 120
 docker compose ps --all
-docker compose logs
 docker compose exec web id
-docker compose exec web python --version
-docker compose exec web python -m django --version
-docker compose exec web gunicorn --version
 docker compose exec web python manage.py check
-docker compose exec web python manage.py showmigrations --plan
 curl.exe --fail --show-error http://127.0.0.1:8000/health/
 ```
 
-Confirm the image contains expected application files but no `.env`, host `.venv`, test source, or development tools. The runtime user must not be root.
+The image inspection result must be `10001:10001`. Confirm that the runtime image does not include `.env`, the host virtual environment, test source, or development tools.
 
-For the exact CI equivalent, the image inspection result must be `10001:10001`. CI stops after validating Compose, building the image, and checking that metadata; it does not start the full stack.
+## API verification
 
-`/health/` is database-aware readiness/operational health. HTTP 200 means Django can query PostgreSQL. HTTP 503 means database-backed requests are not ready and does not necessarily mean Gunicorn has stopped. TASK-004 has no separate liveness route.
+Open Swagger at `http://127.0.0.1:8000/api/docs/`. Create or use a local account, obtain a JWT from `POST /api/v1/auth/token/`, authorize Swagger with the raw access token, and call `GET /api/v1/users/me/` plus an authorized project or task operation.
 
-## Manual verification
+Confirm `/health/` returns `200` when PostgreSQL is available. Do not record tokens, passwords, signing keys, or credentials in project materials.
 
-Open Swagger at `http://127.0.0.1:8000/api/docs/`. With a local-only user, obtain a JWT, authorize Swagger, call `GET /api/v1/users/me/`, and perform an authorized API operation. Do not record tokens, passwords, signing keys, or credentials.
+## Pull request expectations
 
-For persistence, create a disposable project, record only its numeric ID, and confirm it is retrievable. Then run:
+Use a focused branch and keep commits clear and descriptive. Include relevant tests and documentation changes, then review the complete diff before opening a pull request.
 
-```powershell
-docker compose down
-docker compose up -d --wait --wait-timeout 120
-```
+Pull requests must pass both CI checks:
 
-Confirm `db` and `web` are healthy, `migrate` exited successfully, and the same project ID and name remain retrievable. Report whether the disposable record was deleted.
+- `Application checks`;
+- `Container build`.
 
-Every pull request should state how to start the services, what was opened or called, the expected behavior, safe stop steps, and whether local data remains.
+Describe relevant validation and any operational impact in the pull request.
 
-## GitHub Actions CI and merge policy
+## Repository hygiene
 
-The `CI` workflow runs for pull requests targeting `main` and again for pushes to `main`. The pull-request event tests GitHub's merge ref, which represents the proposed branch integrated with the current base. The main-branch push then validates the actual merge commit. Feature-branch pushes alone do not trigger CI, so run the host and container equivalents above before opening or updating the pull request.
+Do not commit `.env` files, credentials, tokens, virtual environments, caches, coverage output, local databases, generated test data, or editor artifacts.
 
-Both independent jobs are permanent required-check contracts:
+## Safe shutdown and reset
 
-- `Application checks` uses PostgreSQL 17 and runs lock validation, locked synchronization, version reporting, Ruff formatting and linting, Django checks, migration-drift detection, migrations, pytest, and OpenAPI schema validation;
-- `Container build` runs `docker compose config --quiet`, builds with `docker compose build --pull`, and checks the non-root image user without pushing an image.
-
-No TASK-005 workflow publishes an artifact or image, deploys, accesses AWS, or uses production configuration. Future pushes to `main` may publish the already tested image and optionally deploy staging. Production must remain a reviewed version-tag, GitHub Release, or manual operation protected by an environment approval and must deploy the exact previously tested image digest.
-
-From TASK-005 onward, retain a small series of meaningful commits on each task branch and merge its pull request with **Create a merge commit**. Do not squash or rebase the pull request. Where repository settings permit it, enable merge commits and disable squash and rebase merging; do not require linear history.
-
-## Development workflow
-
-1. Update `main` and create a focused feature branch.
-2. Keep changes limited to one purpose.
-3. Add or update focused tests.
-4. Update documentation for behavior or workflow changes.
-5. Run host and relevant container checks.
-6. Review the complete diff before opening a pull request.
-7. Confirm `Application checks` and `Container build` pass on the pull request.
-
-Use clear commit prefixes such as `feat`, `fix`, `test`, `docs`, `chore`, `refactor`, `ci`, or `infra`.
-
-## Safe shutdown and repository hygiene
+To stop services and preserve database data:
 
 ```powershell
-# Retains containers and data.
 docker compose stop
-
-# Removes containers/network and preserves postgres_data.
 docker compose down
 ```
 
-This command is an explicitly destructive reset and permanently deletes all local PostgreSQL data:
+The following command is destructive and permanently deletes the named PostgreSQL volume and all local database data:
 
 ```powershell
 docker compose down --volumes --remove-orphans
 ```
-
-Do not commit `.env` files, credentials, tokens, virtual environments, caches, coverage output, local databases, generated test data, or editor artifacts.

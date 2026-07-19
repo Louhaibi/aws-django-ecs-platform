@@ -1,128 +1,105 @@
 # AWS Django ECS Platform
 
-A production-oriented cloud and platform engineering portfolio project built around a Django task-management API.
+A containerized Django REST API for project and task management, backed by
+PostgreSQL and prepared for deployment on AWS ECS.
 
-## Current implementation
+## Overview
 
-TASK-001 through TASK-003 provide the Python 3.13/Django 5.2 application, PostgreSQL-backed project and task domain, Django Admin, JWT-authenticated REST API, Swagger/OpenAPI, pytest, and Ruff.
+The application provides authenticated project and task management through a documented REST API and Django Admin. It runs locally with Docker Compose, uses PostgreSQL for persistence, and includes automated validation for application quality and container builds.
 
-TASK-004 adds a complete local container stack:
+## Features
 
-- a reproducible, multi-stage Django image built from digest-pinned Python and uv images;
-- a non-root Gunicorn runtime with production dependencies only;
-- PostgreSQL 17 with a persistent named volume;
-- a one-shot migration service that must succeed before the web service starts;
-- a database-aware operational-health endpoint at `/health/`;
-- loopback-only host ports and environment-based configuration.
+- user authentication with JSON Web Tokens (JWT);
+- projects, project membership, tasks, assignment, status, priority, and due dates;
+- object-level authorization and validation;
+- Django Admin for administrative management;
+- OpenAPI schema and Swagger UI;
+- PostgreSQL-backed automated tests;
+- database-aware health endpoint at `/health/`;
+- multi-stage, non-root Gunicorn container image;
+- Docker Compose services for PostgreSQL, migrations, and the web application;
+- GitHub Actions checks for application validation and container builds.
 
-TASK-005 adds GitHub Actions continuous integration with PostgreSQL-backed application validation and a non-publishing container build.
+## Architecture
 
-AWS infrastructure, image publication, and deployment workflows are not implemented yet.
+The Django application uses Django REST Framework for HTTP APIs, Django Admin for administrative operations, and PostgreSQL as its supported database. Configuration is environment-based.
 
-## Repository layout
+Docker Compose runs three services locally:
+
+- `db` provides PostgreSQL 17 with persistent storage;
+- `migrate` applies database migrations and must complete before the web service starts;
+- `web` runs Gunicorn as a non-root user and exposes the API.
+
+The container image uses a multi-stage build with locked dependencies. The current design is compatible with a future AWS ECS runtime, but AWS infrastructure and deployment are not implemented.
+
+## Repository structure
 
 ```text
 .
 |-- .github/
-|   `-- workflows/ci.yml # Pull-request and main-branch CI
+|   `-- workflows/ci.yml     # Continuous integration workflow
 |-- app/
-|   |-- apps/             # Users, projects, tasks, and REST API
-|   |-- config/           # Django project configuration and health view
-|   |-- tests/            # Project-level tests
-|   |-- .dockerignore     # Container build-context exclusions
-|   |-- Dockerfile        # Multi-stage non-root Gunicorn image
-|   |-- compose.yaml      # PostgreSQL, migration, and web services
-|   |-- pyproject.toml    # Dependencies and tool configuration
-|   `-- uv.lock           # Exact dependency resolution
-`-- docs/                 # Charter, decisions, roadmap, and task records
+|   |-- apps/                # Django domain applications
+|   |-- config/              # Django configuration and health endpoint
+|   |-- tests/               # Automated tests
+|   |-- Dockerfile           # Multi-stage non-root application image
+|   |-- compose.yaml         # Local PostgreSQL, migration, and web services
+|   |-- pyproject.toml       # Dependencies and tool configuration
+|   `-- uv.lock              # Locked dependency resolution
+|-- docs/
+|   `-- decisions/           # Architecture decisions
+|-- CONTRIBUTING.md
+`-- README.md
 ```
 
 ## Prerequisites
 
 - Docker Desktop running Linux containers with Docker Compose v2;
-- uv for host-based development checks;
+- Python 3.13 and uv for host-based commands;
 - Git.
 
-Docker Desktop must be running before Compose commands. Windows PowerShell commands below also work from WSL 2 with the equivalent shell syntax. Host access uses `127.0.0.1`; the names `db` and `web` are Compose-network hostnames and are not host URLs.
+Docker Desktop must be running before Compose commands. Host access uses `127.0.0.1`; `db` and `web` are Compose-network hostnames rather than host URLs.
 
-## Container-first quick start
+## Quick start
 
-Run from `app/`:
+From `app/`:
 
 ```powershell
 Copy-Item .env.example .env
 docker compose config --quiet
 docker compose up -d --build --wait --wait-timeout 120
-docker compose ps
 docker compose ps --all
 ```
 
-The committed example values are deliberately unsafe and local-only. Keep the ignored `.env` file out of Git. `JWT_SIGNING_KEY` is required and separate from `DJANGO_SECRET_KEY`. Keep the `POSTGRES_*` values consistent; Compose constructs the container-only `DATABASE_URL` with hostname `db`. Passwords used in that URL must be URL-safe.
+Keep `.env` out of version control and use only development values. `JWT_SIGNING_KEY` is required and is separate from `DJANGO_SECRET_KEY`. Keep the `POSTGRES_*` values consistent; Compose constructs its internal database connection with hostname `db`.
 
-Expected state:
+Expected services:
 
 - `db` is healthy on host `127.0.0.1:5432`;
 - `migrate` exits successfully after applying migrations;
 - `web` is healthy on `http://127.0.0.1:8000`.
 
-Open:
+## API access
 
-- operational health: `http://127.0.0.1:8000/health/`;
+Open these local endpoints after the stack is healthy:
+
+- health: `http://127.0.0.1:8000/health/`;
 - Swagger UI: `http://127.0.0.1:8000/api/docs/`;
 - OpenAPI schema: `http://127.0.0.1:8000/api/schema/`;
 - Django Admin: `http://127.0.0.1:8000/admin/`.
 
-`GET /health/` is a database-aware readiness/operational-health endpoint, not pure process liveness. HTTP 200 with `{"status":"ok"}` means Django can query PostgreSQL. HTTP 503 with `{"status":"unhealthy"}` means the application is not ready for database-backed requests; Gunicorn may still be running. TASK-004 adds no separate liveness route.
+The API requires `Authorization: Bearer <access-token>` except for token, schema, Swagger, and health routes. Obtain a token with `POST /api/v1/auth/token/`, then use the raw access token in Swagger's authorization dialog. Do not copy tokens or credentials into version control, issue discussions, or screenshots.
 
-## Container operations
+`GET /health/` is a database-aware operational-health endpoint. A `200` response with `{"status":"ok"}` confirms Django can query PostgreSQL; a `503` response with `{"status":"unhealthy"}` means database-backed requests are not ready.
 
-```powershell
-# Build or rebuild after source/dependency changes
-docker compose build --pull
-docker compose up -d --wait --wait-timeout 120
+## Development and validation
 
-# Status and logs
-docker compose ps
-docker compose ps --all
-docker compose logs
-docker compose logs --follow web
-
-# Application operations
-docker compose run --rm migrate
-docker compose run --rm web python manage.py shell
-docker compose run --rm web python manage.py createsuperuser
-docker compose exec web id
-curl.exe --fail --show-error http://127.0.0.1:8000/health/
-```
-
-There is no source bind mount or autoreload. Rebuild the image after source or dependency changes, then recreate the stack. The runtime image excludes uv, Ruff, pytest, development dependencies, test source, and the host virtual environment.
-
-Gunicorn serves application responses but TASK-004 does not add a production static-file pipeline. Admin styling and offline Swagger assets are therefore not guaranteed through this runtime; static-file handling is deferred.
-
-## Host-based development workflow
-
-Host execution remains supported for tests, linting, and optional `runserver`. In the ignored `.env`, use a host database URL such as `postgresql://...@127.0.0.1:5432/...`, not the Compose-only hostname `db`.
+For host-based validation, start PostgreSQL and run the following from `app/`:
 
 ```powershell
 uv sync --locked --all-groups
 docker compose up -d --wait --wait-timeout 60 db
-uv run python manage.py migrate
-uv run python manage.py runserver
-```
-
-The locked runtime dependency set includes Gunicorn; host development groups additionally include pytest, pytest-django, and Ruff.
-
-## API and Swagger verification
-
-The API requires `Authorization: Bearer <access-token>` except for token, schema, Swagger, and health routes. In Swagger, use `POST /api/v1/auth/token/`, select **Authorize**, paste only the raw access token, and try `GET /api/v1/users/me/` plus an authorized project or task operation. Never copy tokens or local credentials into reports, screenshots, commits, issues, or pull requests.
-
-## Validation
-
-From `app/`, with PostgreSQL healthy:
-
-```powershell
 uv lock --check
-uv sync --locked --all-groups
 uv run python --version
 uv run python -m django --version
 uv run ruff format --check .
@@ -131,58 +108,61 @@ uv run python manage.py check
 uv run python manage.py makemigrations --check --dry-run
 uv run python manage.py migrate --noinput
 uv run pytest
-uv run python manage.py spectacular --validate --file .tmp-task-005-schema.yml
-docker compose config --quiet
-docker compose build --pull
-docker image inspect --format '{{.Config.User}}' aws-django-ecs-platform-app:local
+uv run python manage.py spectacular --validate --file .tmp-schema.yml
 ```
 
-The image inspection result must be `10001:10001`. Inspect the schema result, then remove only `.tmp-task-005-schema.yml`.
+Inspect the generated schema if needed, then remove `.tmp-schema.yml`. A direct development server is available through `uv run python manage.py runserver` when PostgreSQL is available.
 
 ## Continuous integration
 
-The `CI` workflow has two independent, stable jobs:
+The `CI` workflow runs for pull requests targeting `main` and for pushes to `main`. It has two stable jobs:
 
-- `Application checks` installs the locked development environment with Python 3.13.14 and uv 0.11.29, uses a PostgreSQL 17 service, and runs the application commands listed above through schema validation;
-- `Container build` validates Compose, builds `aws-django-ecs-platform-app:local` with `--pull`, and verifies the image is configured to run as `10001:10001` without starting or pushing it.
+- `Application checks` validates the lockfile, locked dependencies, formatting, linting, Django checks, migration drift, PostgreSQL-backed tests, and the OpenAPI schema;
+- `Container build` validates Compose, builds `aws-django-ecs-platform-app:local`, and verifies the non-root image user without starting or publishing the image.
 
-CI runs for pull requests targeting `main`, where GitHub tests the pull request merge ref, and runs again for pushes to `main`, where it validates the committed merge result. A push to a feature branch alone does not run CI; run the local equivalents before opening or updating a pull request. The workflow does not publish images, deploy, use AWS, or use production secrets.
+Pull requests must pass both `Application checks` and `Container build`. The workflow does not publish images, deploy, or access AWS resources.
 
-Repository rules for `main` should require both stable checks, `Application checks` and `Container build`. From TASK-005 onward, pull requests must be merged with **Create a merge commit**; squash merging and rebase merging should be disabled where repository settings permit it. This preserves the task branch's small, meaningful commit series under an explicit merge commit.
+## Container operations
 
-Future delivery workflows may publish a tested image and optionally deploy staging after a push to `main`. Production deployment must remain a separate reviewed version-tag, GitHub Release, or manually dispatched operation that uses a protected production environment and deploys the exact previously tested image digest. No deployment is implemented by TASK-005.
-
-## Persistence check
-
-After Swagger/JWT access works, create a disposable local project through the authenticated API and record only its numeric ID. Confirm it is retrievable, then run:
+From `app/`:
 
 ```powershell
-docker compose down
+docker compose build --pull
 docker compose up -d --wait --wait-timeout 120
+docker compose ps --all
+docker compose logs --follow web
+docker compose run --rm migrate
+docker compose run --rm web python manage.py createsuperuser
+docker compose exec web id
+curl.exe --fail --show-error http://127.0.0.1:8000/health/
 ```
 
-Obtain a fresh token if needed and confirm the same ID and project name are still retrievable. This proves ordinary `down` preserves the `postgres_data` named volume. Delete the disposable record afterward if desired.
+There is no source bind mount or autoreload. Rebuild the image after source or dependency changes, then recreate the stack. The runtime image excludes development dependencies, test source, and the host virtual environment.
 
-## Safe stop and reset commands
+To stop services while preserving database data:
 
 ```powershell
-# Stop containers and retain them and all database data.
 docker compose stop
-
-# Remove containers/network but preserve postgres_data.
 docker compose down
 ```
 
-The following is an explicitly destructive reset. It permanently deletes the named PostgreSQL volume and all local database data:
+The following command is destructive: it permanently deletes the named PostgreSQL volume and all local database data.
 
 ```powershell
 docker compose down --volumes --remove-orphans
 ```
 
-Do not use the destructive command during normal validation.
+## Known limitations
 
-## Project direction
+- Static-file handling is not production-ready; Admin styling and offline Swagger assets are not guaranteed through the current runtime.
+- AWS infrastructure, image publication, and deployment are not implemented.
+- The health endpoint checks database readiness rather than acting as a pure process-liveness endpoint.
 
-Later tasks add Terraform-managed AWS infrastructure, ECR/ECS delivery, deployment automation, security, and observability. The current container image is designed for later ECR/ECS use, but no AWS capability or deployment is claimed here.
+## Planned capabilities
 
-See `docs/project-charter.md`, `docs/decisions/`, and `docs/tasks/` for approved scope and architectural decisions.
+- Terraform-managed AWS infrastructure;
+- ECR image publication;
+- ECS Fargate deployment;
+- environment-specific configuration;
+- observability;
+- security hardening.
